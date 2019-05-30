@@ -1,0 +1,2 @@
+# r.clarke
+Questo codice implementa il modello di Clarke per valutare la portata in uscita da un bacino idrografico ad una data sezione di chiusura. Il vantaggio di avere un tool fisicamente basato (poiché implementato su GIS) è dato dalla possibilità di rappresentare ogni variabile che compare nel modello come spazialmente distribuita, in modo da fornire elaboraizoni sicuramente più precise rispetto a quelle che si potrebbero ottenere stimando la dispersione spaziale dei paramentri in maniera qualitativa o sintetica.
