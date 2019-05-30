@@ -1,0 +1,246 @@
+#!/bin/sh
+#
+############################################################################
+#
+# MODULE:	r.clark
+# AUTHOR(S):	Annalisa Minelli
+# PURPOSE:	Calculates Clark Hydrograph for a basin in output from r.traveltime
+# COPYRIGHT:	(C) 2008 by the GRASS Development Team
+#
+#		This program is free software under the GNU General Public
+#		License (>=v2). Read the file COPYING that comes with GRASS
+#		for details.
+#
+#############################################################################
+#%Module
+#%  description: Calculates Clark hydrograph for a basin in output from r.traveltime.
+#%  keywords: Clark, traveltime, runoff
+#%End
+#%option
+#% key: dem
+#% type: string
+#% gisprompt: old,cell,raster
+#% description: Dem of the zone
+#% required: yes
+#%end
+#%option
+#% key: manningsgrid
+#% type: string
+#% gisprompt: old,cell,raster
+#% description: Basin roughness
+#% required: yes
+#%end
+#%option
+#% key: threshold
+#% type: double
+#% description: Threshold
+#% required: yes
+#%end
+#%option
+#% key: chanwidth
+#% type: string
+#% gisprompt: old,cell,raster
+#% description: Channel width
+#% required: yes
+#%end
+#%option
+#% key: manningschan
+#% type: string
+#% gisprompt: old,cell,raster
+#% description: Channel roughness
+#% required: yes
+#%end
+#%option
+#% key: adis
+#% type: double
+#% description: Average-year discharge in mc/s
+#% required: yes
+#%end
+#%option
+#% key: k
+#% type: double
+#% description: LAG of the basin (h)
+#% required: yes
+#%end
+#%option
+#% key: traveltime
+#% type: string
+#% gisprompt: new,cell,raster
+#% description: Traveltime ouput map
+#% required: yes
+#%end
+#%option
+#% key: erain
+#% type: string
+#% gisprompt: old_file,file,input
+#% key_desc: name
+#% description: Text file of effective rain on the basin surface
+#% required: yes
+#%end
+#%option
+#% key: qtime
+#% type: string
+#% gisprompt: new_file,file,output
+#% key_desc: name
+#% description: Text file of q arriving to the cross section in time
+#% required: yes
+#%end
+
+if  [ -z "$GISBASE" ] ; then
+ echo "You must be in GRASS GIS to run this program." >&2
+ exit 1
+fi   
+
+if [ "$1" != "@ARGS_PARSED@" ] ; then
+  exec g.parser "$0" "$@"
+fi
+
+dem=$GIS_OPT_DEM
+manningsgrid=$GIS_OPT_MANNINGSGRID
+threshold=$GIS_OPT_THRESHOLD
+chanwidth=$GIS_OPT_CHANWIDTH
+manningschan=$GIS_OPT_MANNINGSCHAN
+adis=$GIS_OPT_ADIS
+k=$GIS_OPT_K
+traveltime=$GIS_OPT_TRAVELTIME
+erain=$GIS_OPT_ERAIN
+qtime=$GIS_OPT_QTIME
+
+### setup enviro vars ###
+eval `g.gisenv`
+: ${GISBASE?} ${GISDBASE?} ${LOCATION_NAME?} ${MAPSET?}
+LOCATION=$GISDBASE/$LOCATION_NAME/$MAPSET
+
+g.remove rast=accu,rnetwork,drain,rnetwork_1,filled,filled_d
+r.watershed elevation=$dem threshold=$threshold accumulation=accu stream=rnetwork drainage=drain --overwrite
+r.null map=rnetwork setnull=0
+r.mapcalc "rnetwork_1=rnetwork/rnetwork"
+d.erase
+d.rast $dem
+d.rast -o rnetwork_1
+
+echo "
+
+
+Now, please zoom to the area where you want to put the outlet cross section
+
+
+"
+
+d.zoom
+
+echo "
+
+
+Now, please click on the cell representing the cross section
+
+
+"
+
+#prevent from choosing a wrong cell outside from the streams
+cat=2
+while [ "$cat" != "1" ]
+do
+result=`d.what.rast -t -1 rnetwork_1`
+coor=`echo $result | cut -f1 -d ' '`
+xout=`echo $coor | cut -f1 -d':'`
+yout=`echo $coor | cut -f2 -d':'`
+cat=`echo $result | cut -f3 -d ' ' | tr -d :`
+done
+
+#come back to the previous zoom
+d.zoom -r
+
+res=`g.region -p | grep nsres | cut -f2 -d':' | tr -d ' '`
+newreg=`echo "sqrt(2*($res^2))+1" | bc -l`
+g.region -a res=$res n=n+$newreg s=s-$newreg e=e+$newreg w=w-$newreg
+r.fill.dir input=$dem elevation=filled direction=filled_d type=grass
+ladis=`echo "1000*$adis" | bc -l`
+
+r.traveltimeUp dir=drain accu=accu dtm=filled manningsn=$manningsgrid out_x=$xout out_y=$yout threshold=$threshold nchannel=$manningschan b=$chanwidth dis=$ladis out=traveltime_min --overwrite
+if [ "trav_tagliata" ]; then g.rename rast=trav_tagliata,$traveltime; fi
+
+rm a
+rm report
+
+r.mapcalc "$traveltime=traveltime_min/60"
+r.univar map=$traveltime > st
+steps=`cat st | grep max | cut -f2 -d':' | cut -f1 -d'.'`
+
+r.report -h map=$traveltime units=k null=* output=report nsteps="$steps" 
+
+iso=`cat report | grep from | cut -f2 -d'|' | head -1 | cut -f2 -d'-'`
+
+cat report | grep from | cut -f4 -d'|' > a
+
+echo "
+c=read.csv('a', sep = '\t', dec='.', header = F)
+d=data.frame(cbind(1:nrow(c),c))
+names(d)[1]=\"steps\"
+names(d)[2]=\"kmsq\"
+d=rbind(0,d)
+e=matrix(nrow=nrow(d),ncol=2)
+f=matrix(nrow=nrow(d),ncol=2)
+for(i in 1:nrow(d))
+{
+if((d[i,1])==0)
+{
+e[i,1]=(d[i,1])
+e[i,2]=(d[i,2])
+}
+else
+{
+e[i,1]=($iso*d[i,1])
+e[i,2]=(d[i,2])
+}
+}
+for(i in 1:nrow(d))
+{
+if((d[i,1])==0)
+{
+f[i,1]=(d[i,1])
+f[i,2]=(d[i,2])
+}
+else
+{
+f[i,1]=((e[i,1])+(e[i-1,1]))/2
+f[i,2]=(d[i,2])
+}
+}
+area=f
+rain=read.csv('$erain', sep = '\t', dec='.', header = F)
+r=matrix(ncol=4)
+for (t in 1:(20*nrow(rain)))
+{
+for (i in 1:nrow(area))
+{
+for (j in 1:nrow(rain))
+{
+if(t>=(area[i,1]+rain[j,1]))
+{
+fij=(area[i,2]*rain[j,2]*exp(-(t-(area[i,1]+rain[j,1]))/$k))*1000/($k*3600)
+v=c(t,area[i,1],rain[j,1],fij)
+r=na.omit(rbind(r,v))
+}
+}
+}
+}
+c=c()
+for (k in 1:max(r[,1]))
+{
+d=sum((subset(r,r[,1]==k))[,4])
+c=na.omit(rbind(c,d))
+}
+discharge=data.frame(rbind(0,cbind(1:nrow(c),c)))
+names(discharge)[1]=\"h\"
+names(discharge)[2]=\"Y\"
+write.table(discharge,file='$qtime',row.names=F,col.names=T,sep='\t')
+pdf('discharge$traveltime.pdf')
+print(matplot(discharge\$h, discharge[,c(\"Y\")], type=\"l\", lty=1,lwd=3, col=4,xlab=\"h\",ylab=\"Y\", xlim=range(0:40), pch=1))
+dev.off()
+" > R_temp
+
+echo 'source ("R_temp")' | R --vanilla --slave
+rm R_temp
+
+g.remove rast=accu,rnetwork,drain,rnetwork_1,filled,filled_d
